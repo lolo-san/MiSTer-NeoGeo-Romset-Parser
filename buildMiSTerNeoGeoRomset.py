@@ -4,11 +4,23 @@
 #       loloC2C - SmokeMonster discord 2019
 #-------------------------------------------------------------------------------
 
+
 # ------------------------------ import ----------------------------------------
 
 import os
 import argparse
 import zipfile
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+import shutil
+
+#-------------------------------------------------------------------------------
+
+# tree = ET.parse('neogeo-mamedb.xml')
+# root = tree.getroot()
+
+# for software in root.findall('software'):
+# 	print(software.get('name'))
 
 # ------------------------------ code ------------------------------------------
 
@@ -23,10 +35,7 @@ output_folder = os.path.normpath(ARGS.output_folder)
 if not os.path.exists(output_folder):
 	os.makedirs(output_folder)
 
-xml_path = os.path.join(output_folder, "romsets.xml")
-f = open(xml_path, "w")
-f.write("<romsets>\n")
-
+romsets = ET.Element('romsets')
 for filename in os.listdir(source_folder):
 	filepath = os.path.join(source_folder, filename)
 
@@ -90,9 +99,10 @@ for filename in os.listdir(source_folder):
 	p_file = []
 	s_file = []
 	c_files = []
-	indent = "    "
 
-	f.write(indent+"<romset name=\""+directory+"\">\n")
+	romset = ET.SubElement(romsets, 'romset')
+	romset.set('name', directory)
+
 	for romfile in os.listdir(rom_directory):
 		romfile_path = os.path.join(rom_directory, romfile)
 		romfile_size = os.path.getsize(romfile_path)
@@ -104,13 +114,15 @@ for filename in os.listdir(source_folder):
 			c_files.append([romfile, romfile_size])
 
 	if p_file[1] > 0X100000:
-		f.write(indent+"<file name=\""+p_file[0]+"\" type=\"0\" index=\"1\" start=\"0x100000\" size=\"0x100000\"/>\n")
-		f.write(indent+"<file name=\""+p_file[0]+"\" type=\"0\" index=\"2\" start=\"0\" size=\"0x100000\"/>\n")
+		ET.SubElement(romset, 'file', attrib={'name': p_file[0], 'type': '0', 'index': '1', 'start': '0x100000', 'size': '0x100000'})
+		ET.SubElement(romset, 'file', attrib={'name': p_file[0], 'type': '0', 'index': '2', 'start': '0', 'size': '0x100000'})
 	else:
-		f.write(indent+"<file name=\""+p_file[0]+"\" type=\"0\" index=\"1\" start=\"0\" size=\""+"{0:#x}".format(p_file[1])+"\"/>\n")
+		size_value = "{0:#x}".format(p_file[1])
+		ET.SubElement(romset, 'file', attrib={'name': p_file[0], 'type': '0', 'index': '1', 'start': '0', 'size': size_value})
 	
 	if len(s_file) > 0:
-		f.write(indent+"<file name=\""+s_file[0]+"\" type=\"1\" index=\"3\" start=\"0\" size=\""+"{0:#x}".format(s_file[1])+"\"/>\n")
+		size_value = "{0:#x}".format(s_file[1])
+		ET.SubElement(romset, 'file', attrib={'name': s_file[0], 'type': '1', 'index': '3', 'start': '0', 'size': size_value})
 	
 	index = 32
 	count = 0
@@ -123,7 +135,9 @@ for filename in os.listdir(source_folder):
 
 		romfile_name = c_file[0]
 		romfile_size = c_file[1]
-		f.write(indent+"<file name=\""+romfile_name+"\" type=\"2\" index=\""+"{0:d}".format(final_index)+"\" start=\"0\" size=\""+"{0:#x}".format(romfile_size)+"\"/>\n")
+		index_value = "{0:d}".format(final_index)
+		size_value = "{0:#x}".format(romfile_size)
+		ET.SubElement(romset, 'file', attrib={'name': romfile_name, 'type': '2', 'index': index_value, 'start': '0', 'size': size_value})
 
 		count += 1
 		index += 1
@@ -131,7 +145,9 @@ for filename in os.listdir(source_folder):
 			index -= 2
 			index += int(romfile_size / (256*1024))
 			
-	f.write(indent+"</romset>\n")
+xml_str = minidom.parseString(ET.tostring(romsets)).toprettyxml(indent="    ", encoding='utf8')
+xml_path = os.path.join(output_folder, "romsets.xml")
 
-f.write("</romsets>\n")
+f = open(xml_path, "w")
+f.write(xml_str.decode('utf8'))
 f.close()
