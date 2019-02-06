@@ -3,7 +3,7 @@
 Extracts the relevant NeoGeo rom files (p-roms, s-roms and c-roms) from a zipped NeoGeo romset and generates
 the romsets.xml file which is needed by the NeoGeo MiSTer core.
 
-The source romset needs to be a non-merged or merged set. If a merged set is used only the parent rom will get extracted.
+The source romset needs to be a non-merged or merged set. If a merged set is used then only the parent rom will get extracted.
 
 Program roms in the .bin format are renamed so they can be visible inside the NeoGeo MiSTer core's OSD.
 

@@ -4,9 +4,6 @@
 #       loloC2C - SmokeMonster discord 2019
 #-------------------------------------------------------------------------------
 
-
-# ------------------------------ import ----------------------------------------
-
 import os
 import argparse
 import zipfile
@@ -14,140 +11,213 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import shutil
 
-#-------------------------------------------------------------------------------
+def parse_args():
+	parser = argparse.ArgumentParser(description="extract relevant neogeo rom files and generates romsets.xml file")
+	parser.add_argument("-i", "--input_folder", dest="source_folder", required=False, default=".", help="set source folder")
+	parser.add_argument("-o", "--output_folder", dest="output_folder", required=False, default=".", help="set output folder")
+	return parser.parse_args()
 
-# tree = ET.parse('neogeo-mamedb.xml')
-# root = tree.getroot()
+def parse_database():
+	db = {}
+	root = ET.parse('neogeo-all.db').getroot()
+	for software in root.findall('software'):
+		db[software.get('name')] = software
+	return db
 
-# for software in root.findall('software'):
-# 	print(software.get('name'))
-
-# ------------------------------ code ------------------------------------------
-
-parser = argparse.ArgumentParser(description="extract relevant neogeo rom files and generates romsets.xml file")
-parser.add_argument("-i", "--input_folder", dest="source_folder", required=False, default=".", help="set source folder")
-parser.add_argument("-o", "--output_folder", dest="output_folder", required=False, default=".", help="set output folder")
-ARGS = parser.parse_args()
-
-source_folder = os.path.normpath(ARGS.source_folder)
-output_folder = os.path.normpath(ARGS.output_folder)
-
-if not os.path.exists(output_folder):
-	os.makedirs(output_folder)
-
-romsets = ET.Element('romsets')
-for filename in os.listdir(source_folder):
-	filepath = os.path.join(source_folder, filename)
-
-	if not zipfile.is_zipfile(filepath):
-		continue
-
-	directory = filename[:-4]
-
-	need_rename = False
-	has_prom = False
-	has_crom = False
-	has_srom = False
-	extract_list = []
-
-	zip_ref = zipfile.ZipFile(filepath, 'r')
-	for entry in zip_ref.namelist():
-		if zip_ref.getinfo(entry).is_dir() is True or entry.find("/") != -1:
+def parse_software(db_entry):
+	rom_infos = []
+	for data in db_entry.find('part').findall('dataarea'):
+		if any(unsupported in data.get('name') for unsupported in ("mcu", "audiocrypt", "audiocpu", "ymsnd", "ymsnd.deltat")):
 			continue
-
-		dot_index = entry.find(".")
-		if entry[-4:] == ".bin" or entry[-4:] == ".rom":
-			# Hack for Riding Hero
-			if entry[dot_index-3:dot_index] == "com":
+		for rom in data.findall('rom'):
+			flag = rom.get('loadflag')
+			if flag != None and any(f in flag for f in ("fill", "ignore")):
 				continue
-
-			entry_type = entry[dot_index-2:dot_index]
-			need_rename = True
-		else:
-			entry_type = entry[dot_index+1:]
-
-		if (entry_type[0] == "p" and entry_type[1].isnumeric()) or (entry_type[:2] == "ep" and entry_type[2].isnumeric()):
-			extract_list.append(entry)
-			has_prom = True
-		elif entry_type[0] == "c" and entry_type[1].isnumeric():
-			extract_list.append(entry)
-			has_crom = True
-		elif entry_type[0] == "s" and entry_type[1].isnumeric():
-			extract_list.append(entry)
-			has_srom = True
-
-	if has_prom is False and (has_crom is False or has_srom is False):
-		print(filename+" is not a valid neogeo rom file")
-		zip_ref.close()
-		continue
-
-	rom_directory = os.path.join(output_folder, directory)
-	for entry in extract_list:
-		zip_ref.extract(entry, rom_directory)
-		if need_rename is True:
-			dot_index = entry.find(".")
-			new_name = entry[:-3] + entry[dot_index-2:dot_index]
-			oldname_path = os.path.join(rom_directory, entry)
-			newname_path = os.path.join(rom_directory, new_name)
-			if os.path.exists(newname_path):
-				os.remove(oldname_path)
+			if flag == "continue":
+				info = {'type': data.get('name'), 'name': rom_infos[-1].get('name'), 'size': rom.get('size'), 'offset': rom.get('offset'), 'flag': True}
 			else:
-				os.rename(oldname_path, newname_path)
+				info = {'type': data.get('name'), 'name': rom.get('name'), 'size': rom.get('size'), 'offset': rom.get('offset'), 'flag': False}
+			rom_infos.append(info)
+	return rom_infos
+
+def get_software_list(romfiles):
+	sl = []
+	nb = 0
+	for rf in romfiles:
+		nb += 1
+		if rf.get('flag') is True:
+			continue
+		if nb & 1 == 0 and rf.get('type') == "maincpu" and int(rf.get('size'), 16) < 0x100000:
+			sl.pop()
+			sl.append((romfiles[nb-2].get('name'), rf.get('name')))
+		else:
+			if nb == 1 and rf.get('type') == "maincpu" and rf.get('name')[-3:] == "bin":
+				sl.append((rf.get('name'), "rename"))
+			else:
+				sl.append((rf.get('name'), ""))
+	return sl
+
+def copy_zip_software(output_folder, output_name, romfiles, dirpath, filename):
+	softpath = os.path.join(dirpath, filename)
+	zip_ref = zipfile.ZipFile(softpath, 'r')
+	s_list = get_software_list(romfiles)
+	for entry in s_list:
+		if any(f in entry[0] for f in zip_ref.namelist()) is False:
+			print("could not find rom "+entry[0]+" in "+softpath)
+			return
+		elif entry[1] != "" and entry[1] != "rename" and any(f in entry[1] for f in zip_ref.namelist()) is False:
+			print("could not find rom "+entry[1]+" in "+softpath)
+			return
+
+	output_path = os.path.join(output_folder, output_name)
+	if not os.path.exists(output_path):
+		os.makedirs(output_path)
+
+	for entry in s_list:
+		if entry[1] == "":
+			zip_ref.extract(entry[0], output_path)
+		elif entry[1] == "rename":
+			f = open(os.path.join(output_path, entry[0]), 'wb')
+			f.write(zip_ref.read(entry[0]))
+			f.close()
+		else:
+			f = open(os.path.join(output_path, entry[0]), 'wb')
+			f.write(zip_ref.read(entry[0])+zip_ref.read(entry[1]))
+			f.close()
 
 	zip_ref.close()
 
-	p_file = []
-	s_file = []
-	c_files = []
+def copy_dir_software(output_folder, romfiles, dirpath, dirname):
+	softpath = os.path.join(dirpath, dirname)
+	print("found dir at "+softpath)
 
-	romset = ET.SubElement(romsets, 'romset')
-	romset.set('name', directory)
+	s_list = get_software_list(romfiles)
+	for entry in s_list:
+		print(entry)
 
-	for romfile in os.listdir(rom_directory):
-		romfile_path = os.path.join(rom_directory, romfile)
-		romfile_size = os.path.getsize(romfile_path)
-		if romfile[-3:] == ".p1" or  romfile[-4:] == ".ep1":
-			p_file = [romfile, romfile_size]
-		elif romfile[-3:-1] == ".s":
-			s_file = [romfile, romfile_size]
-		elif romfile[-3:-1] == ".c":	
-			c_files.append([romfile, romfile_size])
+	if not os.path.exists(folder):
+		os.makedirs(folder)
 
-	if p_file[1] > 0X100000:
-		ET.SubElement(romset, 'file', attrib={'name': p_file[0], 'type': '0', 'index': '1', 'start': '0x100000', 'size': '0x100000'})
-		ET.SubElement(romset, 'file', attrib={'name': p_file[0], 'type': '0', 'index': '2', 'start': '0', 'size': '0x100000'})
-	else:
-		size_value = "{0:#x}".format(p_file[1])
-		ET.SubElement(romset, 'file', attrib={'name': p_file[0], 'type': '0', 'index': '1', 'start': '0', 'size': size_value})
-	
-	if len(s_file) > 0:
-		size_value = "{0:#x}".format(s_file[1])
-		ET.SubElement(romset, 'file', attrib={'name': s_file[0], 'type': '1', 'index': '3', 'start': '0', 'size': size_value})
-	
-	index = 32
-	count = 0
-	for c_file in c_files:
-		final_index = index
-		if (count & 1) == 0:
-			final_index += 1
-		else:
-			final_index -= 1
+def generate_romsets_info(folder, software_list):
+	if not os.path.exists(folder):
+		os.makedirs(folder)
 
-		romfile_name = c_file[0]
-		romfile_size = c_file[1]
-		index_value = "{0:d}".format(final_index)
-		size_value = "{0:#x}".format(romfile_size)
-		ET.SubElement(romset, 'file', attrib={'name': romfile_name, 'type': '2', 'index': index_value, 'start': '0', 'size': size_value})
+	romsets = ET.Element('romsets')
 
-		count += 1
-		index += 1
-		if (count & 1) == 0:
-			index -= 2
-			index += int(romfile_size / (256*1024))
-			
-xml_str = minidom.parseString(ET.tostring(romsets)).toprettyxml(indent="    ", encoding='utf8')
-xml_path = os.path.join(output_folder, "romsets.xml")
+	rom_type = {'maincpu': '0', 'fixed': '1', 'sprites': '2'}
+	for entry in software_list:
+		romset = ET.SubElement(romsets, 'romset')
+		romset.set('name', entry[0])
 
-f = open(xml_path, "w")
-f.write(xml_str.decode('utf8'))
-f.close()
+		rom_list = entry[1]
+		rom_cpu_list = []
+		rom_fix_list = []
+		rom_spr_list = []
+		for rom in rom_list:
+			if rom['type'] == "maincpu":
+				rom_cpu_list.append(rom)
+			elif rom['type'] == "fixed":
+				rom_fix_list.append(rom)
+			elif rom['type'] == "sprites" and rom['flag'] is False:
+				rom_spr_list.append(rom)
+
+		for rom in rom_list:
+			if rom['type'] == "sprites" and rom['flag'] is True:
+				rom_spr_list.append(rom)
+
+		# maincpu rom files - look for concatenation
+		concatenate = False
+		rom_size = 0
+		for rom in rom_cpu_list:
+			rom_size += int(rom.get('size'), 16)
+
+		if len(rom_cpu_list) == 2 and rom_size <= 0x100000:
+			concatenate = True
+
+		# maincpu rom files
+		index = 1
+		for rom in rom_cpu_list:
+			rom_offs = rom.get('offset')
+			if index > 1:
+				rom_offs = "0"
+
+			if concatenate is True:
+				size = "{0:#x}".format(rom_size)
+			else:
+				size = rom.get('size')
+			ET.SubElement(romset, 'file', attrib={	'name': rom.get('name'),
+													'type': rom_type.get(rom['type']),
+													'index': "{0:d}".format(index),
+													'start': rom_offs,
+													'size': size})
+			if index == 2 or concatenate is True:
+				break
+			index += 1
+
+		# fixed rom files
+		index = 3
+		for rom in rom_fix_list:
+			ET.SubElement(romset, 'file', attrib={	'name': rom.get('name'),
+													'type': rom_type.get(rom['type']),
+													'index': "{0:d}".format(index),
+													'start': rom.get('offset'),
+													'size': rom.get('size')})
+
+		# sprites rom files
+		for rom in rom_spr_list:
+			rom_offs = rom.get('offset')
+			offset = int(rom_offs, 16)
+			if offset & 1 == 0:
+				index = 33
+			else:
+				offset -= 1
+				index = 32
+			index += int(offset / (512*1024))
+
+			if rom['flag'] is False:
+				rom_offs = "0"
+			else:
+				rom_offs = rom.get('size')
+
+			ET.SubElement(romset, 'file', attrib={	'name': rom.get('name'),
+													'type': rom_type.get(rom['type']),
+													'index': "{0:d}".format(index),
+													'start': rom_offs,
+													'size': rom.get('size')})
+
+	xml_str = minidom.parseString(ET.tostring(romsets)).toprettyxml(indent="    ", encoding='utf8')
+	xml_path = os.path.join(folder, "romsets.xml")
+
+	f = open(xml_path, "w")
+	f.write(xml_str.decode('utf8'))
+	f.close()
+
+if __name__ == '__main__':
+
+	ARGS = parse_args()
+	db = parse_database()
+
+	source_folder = os.path.normpath(ARGS.source_folder)
+	output_folder = os.path.normpath(ARGS.output_folder)
+
+	software_list = []
+	sorted_files = sorted(os.walk(source_folder))
+	for dirpath, dirnames, filenames in sorted_files:
+		if filenames:
+			filenames.sort()
+			for f in filenames:
+				if f[-4:] == ".zip" and f[:-4] in db:
+					rom_infos = parse_software(db.get(f[:-4]))
+					software_list.append((f[:-4], rom_infos))
+					copy_zip_software(output_folder, f[:-4], rom_infos, dirpath, f)
+
+		if dirnames:
+			dirnames.sort()
+			for d in dirnames:
+				if d in db:
+					rom_infos = parse_software(db.get(d))
+					software_list.append((d, rom_infos))
+					copy_dir_software(output_folder, rom_infos, dirpath, d)
+
+	if len(software_list) > 0:
+		generate_romsets_info(output_folder, software_list)
